@@ -14,6 +14,8 @@ import aioamqp
 import aiohttp
 import json
 
+# Test the server with this (python2) tool https://raw.githubusercontent.com/turbodog/python-smtp-mail-sending-tester/master/smtptest.py
+
 __version__ = "0.0.1"
 __metarealease__ = "alpha"
 
