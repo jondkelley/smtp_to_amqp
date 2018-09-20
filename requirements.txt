@@ -1,0 +1,4 @@
+aio-pika==4.0.0
+aioamqp==0.11.0
+aiohttp==3.4.4
+aiosmtpd==1.2
