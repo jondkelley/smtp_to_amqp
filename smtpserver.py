@@ -1,23 +1,54 @@
 #!/usr/bin/env python3
+# FreeBSD License
+# Copyright 2018 Jonathan Kelley
+#
+# Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+#
+# Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+# Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# The views and conclusions contained in the software and documentation are those of the authors and should not be interpreted as representing official policies, either expressed or implied, of the author.
+
 from aiosmtpd.controller import Controller
 from aiosmtpd.handlers import AsyncMessage
 from aiosmtpd.smtp import SMTP, syntax
 from asyncio import coroutine
 from datetime import datetime, timezone
-import asyncio
-import logging
-import uuid
-import logging
-import aio_pika
-import threading
+from logging.handlers import RotatingFileHandler
+from uuid import uuid4
 import aioamqp
-import aiohttp
-import json
+import asyncio
+import bson
+import collections
+import configparser
+import email
+import logging
+import logging as loggingg
+import re
 
 # Test the server with this (python2) tool https://raw.githubusercontent.com/turbodog/python-smtp-mail-sending-tester/master/smtptest.py
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 __metarealease__ = "alpha"
+__author__ = "Jonathan Kelley, jonkelley@gmail.com"
+__copyright__ = "2018 Jonathan Kelley. The FreeBSD Copyright"
+
+config = configparser.ConfigParser()
+config.read('config/ingestapi.ini')
+class AnsiColor():
+    """
+    life is better in color
+    """
+    header = '\033[95m'
+    blue = '\033[1;94m'
+    green = '\033[1;92m'
+    yellow = '\033[93m'
+    red = '\033[91m'
+    end = '\033[0m'
+    bold = '\033[1m'
+    magenta = '\033[35m'
+    underline = '\033[4m'
 
 class SMTPOverload(SMTP):
     """
@@ -32,8 +63,11 @@ class SMTPOverload(SMTP):
         generic_amqp_error = "AMQP connection issue, message deferred from {} exception: {}"
         fail = False
         self.amqpchannel = None
+
         try:
-            transport, protocol = await aioamqp.connect('127.0.0.1', 55672)
+            amqp_host = config['smtpd']['amqp_host']
+            amqp_port = config['smtpd']['amqp_port']
+            transport, protocol = await aioamqp.connect(amqp_host, amqp_port)
             self.amqpchannel = await protocol.channel()
         except aioamqp.AmqpClosedConnection as e:
             logging.error(generic_amqp_error.format(arg, e))
@@ -43,16 +77,12 @@ class SMTPOverload(SMTP):
             fail = True
 
         try:
-            await self.amqpchannel.queue('ingestqueue', durable=True)
-            message = {"h": 0}
-            message = json.dumps(message)
-            await self.amqpchannel.basic_publish(
-                payload=message,
-                exchange_name='',
-                routing_key='ingestqueue',
-                properties={
-                    'delivery_mode': 2,
-                },
+            logging.warning("client HELO testing AMQP connection")
+            await self.amqpchannel.queue(config['smtpd']['amqp_worker_queue'], durable=True)
+            message = {"envelope": 0}
+            message = bson.dumps(message)
+            await self.amqpchannel.basic_publish(payload=message, exchange_name='',
+                routing_key=config['smtpd']['amqp_worker_queue'], properties={ 'delivery_mode': 2 },
             )
             logging.debug("Sent message {}".format(message))
             await protocol.close()
@@ -65,15 +95,15 @@ class SMTPOverload(SMTP):
         hostport = "{} port {}".format(self.session.peer[0], self.session.peer[1])
         logging.info("smtp HELO from peer {}".format(hostport))
         logging.info("smtp HELO from peer {}".format(self.session.peer))
-        await super().smtp_HELO(arg)
 
+        await super().smtp_HELO(arg)
 
     @syntax('MAIL FROM: <address>', extended=' [SP <mail-parameters>]')
     async def smtp_MAIL(self, arg):
         """
         overload to add uuid to envelope
         """
-        self.envelope.t_message_id = str(uuid.uuid4()).split('-', 2)[2].replace('-', '')
+        self.envelope.t_message_id = str(uuid4()).split('-', 2)[2].replace('-', '')
         await super().smtp_MAIL(arg)
 
     @syntax('EHLO hostname')
@@ -86,7 +116,9 @@ class SMTPOverload(SMTP):
         fail = False
         self.amqpchannel = None
         try:
-            transport, protocol = await aioamqp.connect('127.0.0.1', 55672)
+            amqp_host = config['smtpd']['amqp_host']
+            amqp_port = config['smtpd']['amqp_port']
+            transport, protocol = await aioamqp.connect(amqp_host, amqp_port)
             self.amqpchannel = await protocol.channel()
         except aioamqp.AmqpClosedConnection as e:
             logging.error(generic_amqp_error.format(arg, e))
@@ -96,16 +128,12 @@ class SMTPOverload(SMTP):
             fail = True
 
         try:
-            await self.amqpchannel.queue('ingestqueue', durable=True)
-            message = {"h": 0}
-            message = json.dumps(message)
-            await self.amqpchannel.basic_publish(
-                payload=message,
-                exchange_name='',
-                routing_key='ingestqueue',
-                properties={
-                    'delivery_mode': 2,
-                },
+            logging.warning("client EHLO testing AMQP connection")
+            await self.amqpchannel.queue(config['smtpd']['amqp_worker_queue'], durable=True)
+            message = {"envelope": 0}
+            message = bson.dumps(message)
+            await self.amqpchannel.basic_publish(payload=message, exchange_name='',
+                routing_key=config['smtpd']['amqp_worker_queue'], properties={ 'delivery_mode': 2 },
             )
             logging.debug("Sent message {}".format(message))
             await protocol.close()
@@ -162,7 +190,13 @@ class SMTPControllerOverload(Controller):
         """
         _ver = __version__
         _meta = __metarealease__.upper()
-        smtp = SMTPOverload(self.handler, enable_SMTPUTF8=self.enable_SMTPUTF8, ident="SMTP Digester v{} ({})".format(_ver, _meta))
+        default_ident = "SMTP Digester v{} ({})".format(_ver, _meta)
+
+        datalimit = int(config['smtpd']['message_size_limit'])
+        decodedata = config['smtpd']['decode_data']
+        enablesmtputf8 = config['smtpd']['enable_SMTPUTF8']
+        myident = config['smtpd'].get('banner', default_ident)
+        smtp = SMTPOverload(self.handler, data_size_limit=datalimit, decode_data=decodedata, enable_SMTPUTF8=self.enable_SMTPUTF8, ident=myident)
         return smtp
 
 class MessageOverload(AsyncMessage):
@@ -175,87 +209,136 @@ class MessageOverload(AsyncMessage):
         self.loop = loop or asyncio.get_event_loop()
 
     async def handle_DATA(self, server, session, envelope):
-
         message = self.prepare_message(session, envelope)
-        await self.handle_message(message, envelope)
         mailtos = str(envelope.rcpt_tos).split('[')[1].split(']')[0].replace('\'', '').replace(',', ';')
-        logging.info("accepted message from={} tos={} t_message_id={}".format(envelope.mail_from, mailtos, envelope.t_message_id))
-        return '250 OK message {} accepted for ingest'.format(envelope.t_message_id)
+        logging.warning("new message {} from={} tos={}".format(envelope.t_message_id, envelope.mail_from, mailtos))
+        await self.digest_message(message, envelope)
+        logging.warning("Sent peer: Msg 250 OK {} accepted for delivery".format(envelope.t_message_id))
+        logging.warning("Finished processing {}".format(envelope.t_message_id))
+        return '250 OK message {} accepted for delivery'.format(envelope.t_message_id)
 
-    async def handle_message(self, message, envelope):
+    async def digest_message(self, message, envelope):
         """
         perform action on any elements of the incoming email
         """
+        # allow auxillary publisher queues
+        auxqueues = config['smtpd'].get('amqp_aux_queues', False)
+        msg = None
+        campaigns = config['smtpd'].get('campaigns')
+        for recipient in envelope.rcpt_tos:
+            logging.warning("ingested message {} recipient={}".format(envelope.t_message_id, recipient))
+            campaign_match = False
+            for campaign in campaigns:
+                try:
+                    rcptprefix = recipient.split("-")[0].lower()
+                    campaign_match = True
+                except:
+                    rcptprefix = ""
+                if campaign == rcptprefix:
+                    try:
+                        msg = email.message_from_bytes(envelope.original_content)
+                    except Exception as e:
+                        logging.error("error decoding message, message {} was lost! exception: {}".format(envelope.t_message_id, e))
+                else:
+                    continue
+
+        recipient = re.search(r'[\w\.-]+@[\w\.-]+', envelope.rcpt_tos[0]).group(0)
+        domain = recipient.split('@')[-1].lower()
+        identity = recipient.split('@')[0].split('-')[-1]
+        campaign = recipient.split('@')[0].split('-')[0].lower()
+
+        logging.warning("digested message {} campaign={} domain={} identity={}".format(envelope.t_message_id, campaign,  domain, identity))
 
         generic_amqp_error = "AMQP issue, message {} was destroyed in transit, exception: {}"
         try:
-            transport, protocol = await aioamqp.connect('127.0.0.1', 55672)
+            amqp_host = config['smtpd']['amqp_host']
+            amqp_port = config['smtpd']['amqp_port']
+            transport, protocol = await aioamqp.connect(amqp_host, amqp_port)
             self.amqpchannel = await protocol.channel()
         except aioamqp.AmqpClosedConnection as e:
             logging.error(generic_amqp_error.format(envelope.t_message_id, e))
         except Exception as e:
             logging.error(generic_amqp_error.format(envelope.t_message_id, e))
-        await self.amqpchannel.queue('ingestqueue', durable=True)
+        try:
+            await self.amqpchannel.queue(config['smtpd']['amqp_worker_queue'], durable=True)
+        except Exception as e:
+            logging.error("Error setting up amqp channel, exception: {}".format(e))
+        if auxqueues:
+            for auxqueue in auxqueues.split(","):
+                try:
+                    await self.amqpchannel.queue(auxqueue, durable=True)
+                except Exception as e:
+                    logging.error("Error setting up amqp channel, exception: {}".format(e))
+        logging.info("message length={}".format(len(envelope.original_content)))
 
+        a, b, x  = __version__.split(".")
+        amqp_version = (a, b)
+        # only include major, minor version as contract identifier (not build)
         amqp_envelope = {
-            "h": 1,
-            "m": {
-                    "time_arrival": {
-                        "amqp": {0: datetime.utcnow().replace(tzinfo=timezone.utc).isoformat(), 1: datetime.now().timestamp()}
-                    }
-                },
-            "d": {
-                    "tid": envelope.t_message_id, "msg": str(message), "from": str(envelope.mail_from),
-                    "tos": list(envelope.rcpt_tos), "rcpt_opts": str(envelope.rcpt_options),
-                    "utf8": str(envelope.smtp_utf8)
-                }
-            }
-        amqp_envelope = json.dumps(amqp_envelope) + "\n\n"
-
-        await self.amqpchannel.basic_publish(
-            payload=amqp_envelope,
-            exchange_name='',
-            routing_key='ingestqueue',
-            properties={
-                'delivery_mode': 2,
+            "envelope": 1,
+            "v": amqp_version,
+            "datetimes_utc": {
+                "smtpserver_processed": datetime.utcnow()
             },
-        )
-        logging.info("amqp message COMMIT t_message_id={}".format(envelope.t_message_id))
+            "data":
+                {
+                    "tid": str(envelope.t_message_id),
+                    "from": str(envelope.mail_from),
+                    "tos": list(envelope.rcpt_tos),
+                    "rcpt_opts": str(envelope.rcpt_options),
+                    "utf8": str(envelope.smtp_utf8),
+                    "campaign": str(campaign),
+                    "identity": str(identity),
+                    "domain": str(domain),
+                    "original_content": str(envelope.original_content)
+                }
+        }
+        amqp_envelope = bson.dumps(amqp_envelope)
+
+        try:
+            await self.amqpchannel.basic_publish(
+                payload=amqp_envelope,
+                exchange_name='',
+                routing_key=config['smtpd']['amqp_worker_queue'],
+                properties={
+                    'delivery_mode': 2,
+                },
+            )
+        except Exception as e:
+            logging.error("Error writing to amqp channel, exception: {}".format(e))
+        if auxqueues:
+            for auxqueue in auxqueues.split(","):
+                logging.info("Duplicating amqp message {} to auxillary queue {}".format(envelope.t_message_id, auxqueue))
+                try:
+                    await self.amqpchannel.basic_publish(
+                        payload=amqp_envelope,
+                        exchange_name='',
+                        routing_key=auxqueue,
+                        properties={
+                            'delivery_mode': 2,
+                        },
+                    )
+                except Exception as e:
+                    logging.error("Error writing to amqp channel, exception: {}".format(e))
+        logging.warning("AMQP (COMMIT OK) generated bson of message {}".format(envelope.t_message_id))
         protocol.close()
         transport.close()
-
 
 async def smtp_main(loop):
     """
     smtp server
     """
     logging.info("smtp_main thread")
-    control = SMTPControllerOverload(MessageOverload(), hostname='', port=8025)
-    control.start()
-
-async def bmain(loop):
-    """
-    amqp connection client
-    """
-    logging.info("An AMQP client has some blocking in b(main)")
-    connection = await aio_pika.connect_robust("amqp://guest:guest@127.0.0.1:33323", loop=loop)
-    queue_name = "test_queue"
-
-    # Creating channel
+    list_host = config['smtpd'].get('listen_host', '127.0.0.1')
+    list_port = config['smtpd'].get('listen_port', '8025')
+    controller = SMTPControllerOverload(MessageOverload(), hostname=list_host, port=list_port)
     try:
-        channel = await connection.channel()    # type: aio_pika.Channel
-
-    # Declaring queue
-        queue = await channel.declare_queue(queue_name, auto_delete=True)   # type: aio_pika.Queue
-
-        async for message in queue:
-            with message.process():
-                print(message.body)
-
-                if queue.name in message.body.decode():
-                    break
-    except RuntimeError:
-        logging.info("smtp amqp server socket collapsed, messages may be lost in-transit")
+        logging.warning("controller is listening on {}:{}".format(list_host, list_port))
+        controller.start()
+    except OSError as e:
+        logging.critical("main thread crashed, exception {}".format(e))
+    except Exception as e:
+        logging.critical("main thread crashed, exception {}".format(e))
 
 @coroutine
 def loop_main():
@@ -263,38 +346,48 @@ def loop_main():
     Always keep a standby thread
     """
     logging.info("loop main_thread")
-    while True:
-        yield from asyncio.sleep(5)
+    while(True):
+        logging.debug("Tick")
+        yield from asyncio.sleep(10)
 
-async def fetch(session, url):
-    """
-    loads a http session with url
-    """
-    async with session.get(url, verify_ssl=False) as response:
-        return await response.text()
+def configure_logging():
+    logpath = config['smtpd']['log_file']
+    format=('{blue1}%(asctime)s '
+            '{red1}%(filename)s:%(lineno)d '
+            '{yel1}%(levelname)s '
+            '{gre1}%(funcName)s() '
+            '{res}%(message)s').format(blue1=AnsiColor.blue, red1=AnsiColor.red, yel1=AnsiColor.yellow, res=AnsiColor.end, gre1=AnsiColor.magenta)
+    format1=('%(asctime)s '
+            '%(filename)s:%(lineno)d '
+            '%(levelname)s '
+            '%(funcName)s() '
+            '%(message)s')
+    logFormatter = loggingg.Formatter(format)
+    logFormatterfile = loggingg.Formatter(format1)
+    logging = loggingg.getLogger()
+    logging.setLevel(loggingg.INFO)
 
-async def dmain(url):
-    """
-    url expensive blocking work test
-    """
-    async with aiohttp.ClientSession() as session:
-        for i in range(99999999):
-            print(i)
-            html = await fetch(session, url)
-            print(html)
+    fileHandler = loggingg.FileHandler(logpath)
+    fileHandler.setFormatter(logFormatterfile)
+    logging.addHandler(fileHandler)
 
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    consoleHandler = loggingg.StreamHandler()
+    consoleHandler.setFormatter(logFormatter)
+    logging.addHandler(consoleHandler)
 
+def entrypoint():
+    configure_logging()
+    logging.warning("Starting asyncio SMTP...")
     loop = asyncio.get_event_loop()
     tasks = [
         asyncio.Task(smtp_main(loop=loop)),
-        #asyncio.Task(bmain(loop=loop)),
         asyncio.Task(loop_main()),
-        #asyncio.Task(dmain(url='http://192.168.0.1'))
         ]
 
     try:
         loop.run_until_complete(asyncio.gather(*tasks))
     except KeyboardInterrupt:
         pass
+
+if __name__ == '__main__':
+    entrypoint()
