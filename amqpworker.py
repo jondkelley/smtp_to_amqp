@@ -14,12 +14,12 @@ from aioamqp_consumer import Consumer, Producer
 from datetime import datetime, timezone
 from functools import partial
 import asyncio
-import bson
 import collections
 import configparser
 import email
 import logging
 import logging as loggingg
+import pickle
 
 __version__ = "0.0.1"
 __author__ = "Jonathan Kelley, jonkelley@gmail.com"
@@ -37,8 +37,26 @@ class AttachmentRedisObject:
         self.content_type = None
         self.content = None
 
-async def digest_email(payload, options, sleep=0, *, loop):
+async def digest_smtpd_bson_feed(payload, options, sleep=0, *, loop):
     await asyncio.sleep(sleep, loop=loop)
+    try:
+        payload = pickle.loads(payload)
+    except Exception as e:
+        logging.error("Discarding envelope, invalid format/decoding exception: {}".format(e))
+        return
+
+    logging.warning("Received message {} from producer".format(payload['data']['tid']))
+    logging.warning(payload['envelope'])
+    logging.warning(payload['datetimes_utc']['smtpserver_processed'])
+    logging.warning(payload['data']['tid'])
+    logging.warning(payload['data']['from'])
+    logging.warning(payload['data']['tos'])
+    logging.warning(payload['data']['rcpt_opts'])
+    logging.warning(payload['data']['utf8'])
+    logging.warning(payload['data']['campaign'])
+    logging.warning(payload['data']['identity'])
+    logging.warning(payload['data']['domain'])
+    logging.warning(payload['data']['original_content'])
     # get domain,  regex, etc applied
     # if smarthost
     # if amqp forward
@@ -49,13 +67,12 @@ async def task(payload, options, sleep=0, *, loop):
     await asyncio.sleep(sleep, loop=loop)
     print(payload)
 
-async def infinite(*, loop, amqp_url):
+async def infinite(*, loop, amqp_url, amqp_queue_name):
     """"
     paginate off amqp and process tasks
     """
     amqp_url = amqp_url
     # i.e. 'amqp://guest:guest@127.0.0.1:55672//'
-    amqp_queue = 'ingestqueue'
     queue_kwargs = {
         'durable': True,
     }
@@ -63,14 +80,14 @@ async def infinite(*, loop, amqp_url):
 
     consumer = Consumer(
         amqp_url,
-        partial(task, loop=loop, sleep=0),
-        amqp_queue,
+        partial(digest_smtpd_bson_feed, loop=loop, sleep=0),
+        amqp_queue_name,
         queue_kwargs=queue_kwargs,
         amqp_kwargs=amqp_kwargs,
         loop=loop,
     )
     #await consumer.scale(20)  # scale up to 20 background coroutines
-    await consumer.scale(8)  # downscale to 5 background coroutines
+    await consumer.scale(int(config['amqpworker'].get('threads', 4)))  # downscale to 5 background coroutines
     await consumer.join()  # wait for rabbitmq queue is empty and all local messages are processed
     consumer.close()
     await consumer.wait_closed()
@@ -78,7 +95,8 @@ async def infinite(*, loop, amqp_url):
 def entrypoint():
     loop = asyncio.get_event_loop()
     amqp_url = config['amqpworker']['aqmp_backend_url']
-    loop.run_until_complete(infinite(loop=loop, amqp_url=amqp_url))
+    amqp_queue = config['amqpworker']['amqp_backend_queue']
+    loop.run_until_complete(infinite(loop=loop, amqp_url=amqp_url, amqp_queue_name=amqp_queue))
     loop.close()
 
 if __name__ == '__main__':
