@@ -19,12 +19,12 @@ from logging.handlers import RotatingFileHandler
 from uuid import uuid4
 import aioamqp
 import asyncio
-import bson
 import collections
 import configparser
 import email
 import logging
 import logging as loggingg
+import pickle
 import re
 
 # Test the server with this (python2) tool https://raw.githubusercontent.com/turbodog/python-smtp-mail-sending-tester/master/smtptest.py
@@ -80,7 +80,7 @@ class SMTPOverload(SMTP):
             logging.warning("client HELO testing AMQP connection")
             await self.amqpchannel.queue(config['smtpd']['amqp_worker_queue'], durable=True)
             message = {"envelope": 0}
-            message = bson.dumps(message)
+            message = pickle.dumps(message)
             await self.amqpchannel.basic_publish(payload=message, exchange_name='',
                 routing_key=config['smtpd']['amqp_worker_queue'], properties={ 'delivery_mode': 2 },
             )
@@ -131,7 +131,7 @@ class SMTPOverload(SMTP):
             logging.warning("client EHLO testing AMQP connection")
             await self.amqpchannel.queue(config['smtpd']['amqp_worker_queue'], durable=True)
             message = {"envelope": 0}
-            message = bson.dumps(message)
+            message = pickle.dumps(message)
             await self.amqpchannel.basic_publish(payload=message, exchange_name='',
                 routing_key=config['smtpd']['amqp_worker_queue'], properties={ 'delivery_mode': 2 },
             )
@@ -293,7 +293,7 @@ class MessageOverload(AsyncMessage):
                     "original_content": str(envelope.original_content)
                 }
         }
-        amqp_envelope = bson.dumps(amqp_envelope)
+        amqp_envelope = pickle.dumps(amqp_envelope)
 
         try:
             await self.amqpchannel.basic_publish(
