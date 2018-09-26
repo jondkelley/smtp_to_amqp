@@ -21,7 +21,7 @@ class Envelope(db.Model):
     this may cause performance issues (slowness) paginating the API at 4+ million rows
     foreign key optimization for a rainy day?
     """
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(db.BigInteger, primary_key=True)
     uuid = db.Column(db.String(20), unique=True)
     read = db.Column(db.Boolean(), default=False)
     read_expireafter = db.Column(db.DateTime())
@@ -29,17 +29,17 @@ class Envelope(db.Model):
     campaign = db.Column(db.String(64), unique=False)
     domain = db.Column(db.String(512), unique=False)
     amqp_processed = db.Column(db.DateTime())
-    mysql_processed = db.Column(db.DateTime())
+    worker_processed = db.Column(db.DateTime())
     xfrom = db.Column(db.String(512), unique=False)
     tos = db.Column(db.String(1024), unique=False)
 
-    def __init__(self, id, uuid, read, identity, amqp_processed, mysql_processed, xfrom, tos):
+    def __init__(self, id, uuid, read, identity, amqp_processed, worker_processed, xfrom, tos):
         self.id = id
         self.uuid = uuid
         self.read = read
         self.identity = identity
         self.amqp_processed = amqp_processed
-        self.mysql_processed = mysql_processed
+        self.worker_processed = worker_processed
         self.xfrom = xfrom
         self.tos = tos
 
