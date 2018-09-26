@@ -42,18 +42,23 @@ async def worker_mysql_writeout(loop, eml, payload):
     """
     write event log to mysql
     """
-    pass
+    sqlmessage = {}
+    sqlmessage['dt_smtpd_processed'] = payload['datetimes_utc']['smtpserver_processed']
+    sqlmessage['dt_workr_processed'] = datetime.utcnow()
+    sqlmessage['campaign'] = payload['data']['campaign']
+    sqlmessage['domain'] = payload['data']['domain']
+    sqlmessage['identity'] = payload['data']['identity']
+    sqlmessage['uuid'] = payload['data']['tid']
+    sqlmessage['from'] = payload['data']['from']
+    sqlmessage['tos'] = payload['data']['tos']
+    sqlmessage['expiretime'] = int(config['amqpworker'].get('mysql_event_expireafter', '3'))
+    logging.error(sqlmessage)
 
 async def worker_redis_writeout(loop, eml, payload):
     """
     write decoded attachments to redis
     """
     logging.warning(eml.keys())
-    sqlmessage = {}
-    sqlmessage['campaign'] = payload['data']['campaign']
-    sqlmessage['domain'] = payload['data']['domain']
-    sqlmessage['identity'] = payload['data']['identity']
-    sqlmessage['uuid'] = payload['data']['tid']
     # Fetch attachments
     ALLOW_EXT = config['amqpworker'].get('allowed_attachment_extensions', '').split(",")
     if ALLOW_EXT == '':
@@ -132,8 +137,9 @@ async def process_inbound_message(payload, options, sleep=0, *, loop):
         # handles the administrative functions of message processing
         await worker_redis_writeout(loop, eml, payload)
         await worker_mysql_writeout(loop, eml, payload)
+        logging.warning("Processing finished on {}".format(t_uid))
 
-async def forever(*, loop, amqp_url, amqp_queue_name):
+async def work_forever(*, loop, amqp_url, amqp_queue_name):
     """"
     paginate off amqp and process tasks
     """
@@ -165,7 +171,7 @@ def entrypoint():
     loop = asyncio.get_event_loop()
     amqp_url = config['amqpworker']['aqmp_backend_url']
     amqp_queue = config['amqpworker']['amqp_backend_queue']
-    loop.run_until_complete(forever(loop=loop, amqp_url=amqp_url, amqp_queue_name=amqp_queue))
+    loop.run_until_complete(work_forever(loop=loop, amqp_url=amqp_url, amqp_queue_name=amqp_queue))
     loop.run_forever()
 
 if __name__ == '__main__':
