@@ -38,19 +38,13 @@ class AttachmentRedisObject:
         self.content_type = None
         self.content = None
 
-async def worker_forward_amqp_as_json(loop, eml, payload):
-    """
-    forward json email frames onto an amqp queue (downstream processing?)
-    """
-    pass
-
 async def worker_mysql_writeout(loop, eml, payload):
     """
     write event log to mysql
     """
     pass
 
-async def worker_redis_attachment_writeout(loop, eml, payload):
+async def worker_redis_writeout(loop, eml, payload):
     """
     write decoded attachments to redis
     """
@@ -136,9 +130,8 @@ async def process_inbound_message(payload, options, sleep=0, *, loop):
         eml = email.message_from_string(payload['data']['original_content'])
 
         # handles the administrative functions of message processing
-        await worker_redis_attachment_writeout(loop, eml, payload)
+        await worker_redis_writeout(loop, eml, payload)
         await worker_mysql_writeout(loop, eml, payload)
-        await worker_forward_amqp_as_json(loop, eml, payload)
 
 async def forever(*, loop, amqp_url, amqp_queue_name):
     """"
