@@ -19,6 +19,7 @@ import configparser
 import email
 import logging
 import logging as loggingg
+import mimetypes
 import pickle
 
 __version__ = "0.0.1"
@@ -37,37 +38,109 @@ class AttachmentRedisObject:
         self.content_type = None
         self.content = None
 
-async def digest_smtpd_bson_feed(payload, options, sleep=0, *, loop):
+async def worker_forward_amqp_as_json(loop, eml, payload):
+    """
+    forward json email frames onto an amqp queue (downstream processing?)
+    """
+    pass
+
+async def worker_mysql_writeout(loop, eml, payload):
+    """
+    write event log to mysql
+    """
+    pass
+
+async def worker_redis_attachment_writeout(loop, eml, payload):
+    """
+    write decoded attachments to redis
+    """
+    logging.warning(eml.keys())
+    sqlmessage = {}
+    sqlmessage['campaign'] = payload['data']['campaign']
+    sqlmessage['domain'] = payload['data']['domain']
+    sqlmessage['identity'] = payload['data']['identity']
+    sqlmessage['uuid'] = payload['data']['tid']
+    # Fetch attachments
+    ALLOW_EXT = config['amqpworker'].get('allowed_attachment_extensions', '').split(",")
+    if ALLOW_EXT == '':
+        ALLOW_EXT = []
+    DISALLOW_EXT = config['amqpworker'].get('deny_attachment_extensions', '').split(",")
+    if DISALLOW_EXT == '':
+        DISALLOW_EXT = []
+
+    counter = 0
+    redismessage = {}
+    redismessage['t_uid'] = payload['data']['tid']
+    redismessage['from'] = payload['data']['from']
+    redismessage['tos'] = payload['data']['tos']
+    redismessage['from'] = payload['data']['from']
+    redismessage['raw_files'] = {}
+    for part in eml.walk():
+        counter += 1
+        # multipart/* are just containers
+        if part.get_content_maintype() == 'multipart':
+            continue
+        else:
+            logging.warning("Content type not multipart")
+
+        redismessage['subject'] = eml['subject']
+        # Applications should really sanitize the given filename so that an
+        # email message can't be used to overwrite important files
+        filename = part.get_filename()
+        if not filename:
+            #ext = mimetypes.guess_extension(part.get_content_type())
+            # Use a generic bag-of-bits extension
+            ext = '.txt'
+            filename = 'part-%03d%s' % (counter, ext)
+        realext = str(filename).split('.')[-1]
+        payload=part.get_payload(decode=True)
+        allow_file = False
+        if (len(ALLOW_EXT) == 0) or (realext in ALLOW_EXT):
+            allow_file = True
+        if (len(DISALLOW_EXT) > 0) and (realext in DISALLOW_EXT):
+            allow_file = False
+        if allow_file:
+            if filename == "part-001.txt":
+                redismessage['txt'] = payload
+            elif filename == "part-002.txt":
+                redismessage['html'] = payload
+            else:
+                print("including attachment {}".format(filename))
+                redismessage['raw_files'][filename] = payload
+        else:
+            print("dropping prohibited attachment {}".format(filename))
+            #logger.info()
+            counter = counter - 1
+        redismessage['original_content'] = str(eml)
+        logging.error(redismessage)
+
+async def process_inbound_message(payload, options, sleep=0, *, loop):
+    """
+    Initially validates payload and transfers to worker functions
+    """
     await asyncio.sleep(sleep, loop=loop)
     try:
         payload = pickle.loads(payload)
+        payload['envelope']
     except Exception as e:
         logging.error("Discarding envelope, invalid format/decoding exception: {}".format(e))
         return
 
-    logging.warning("Received message {} from producer".format(payload['data']['tid']))
-    logging.warning(payload['envelope'])
-    logging.warning(payload['datetimes_utc']['smtpserver_processed'])
-    logging.warning(payload['data']['tid'])
-    logging.warning(payload['data']['from'])
-    logging.warning(payload['data']['tos'])
-    logging.warning(payload['data']['rcpt_opts'])
-    logging.warning(payload['data']['utf8'])
-    logging.warning(payload['data']['campaign'])
-    logging.warning(payload['data']['identity'])
-    logging.warning(payload['data']['domain'])
-    logging.warning(payload['data']['original_content'])
-    # get domain,  regex, etc applied
-    # if smarthost
-    # if amqp forward
-    # if http forward
-    print(payload)
+    if payload['envelope'] > 0:
+        t_uid = payload['data']['tid']
+        fro = payload['data']['from']
+        to = str(payload['data']['tos']).replace('[', '').replace(']', '').replace('\'', '')
+        utf = payload['data']['utf8']
+        logging.warning("New amqp message {} from mail server utf8={} from={} to={}".format(t_uid, utf, fro, to,))
 
-async def task(payload, options, sleep=0, *, loop):
-    await asyncio.sleep(sleep, loop=loop)
-    print(payload)
+        eml = email.message_from_string(payload['data']['original_content'])
 
-async def infinite(*, loop, amqp_url, amqp_queue_name):
+        # handles the administrative functions of message processing
+        await worker_redis_attachment_writeout(loop, eml, payload)
+        await worker_mysql_writeout(loop, eml, payload)
+        await worker_forward_amqp_as_json(loop, eml, payload)
+
+async def forever(*, loop, amqp_url, amqp_queue_name):
     """"
     paginate off amqp and process tasks
     """
@@ -80,24 +153,27 @@ async def infinite(*, loop, amqp_url, amqp_queue_name):
 
     consumer = Consumer(
         amqp_url,
-        partial(digest_smtpd_bson_feed, loop=loop, sleep=0),
+        partial(process_inbound_message, loop=loop, sleep=0),
         amqp_queue_name,
         queue_kwargs=queue_kwargs,
         amqp_kwargs=amqp_kwargs,
         loop=loop,
     )
-    #await consumer.scale(20)  # scale up to 20 background coroutines
-    await consumer.scale(int(config['amqpworker'].get('threads', 4)))  # downscale to 5 background coroutines
+    await consumer.scale(int(config['amqpworker'].get('threads', 8)))
     await consumer.join()  # wait for rabbitmq queue is empty and all local messages are processed
-    consumer.close()
-    await consumer.wait_closed()
+    asyncio.sleep(0.5)
+    # ----below----- cause consumer to exit once to bottom of queue
+    # consumer.close()
+    # await consumer.wait_closed()
+    # consumer.close()
+    # await consumer.wait_closed()
 
 def entrypoint():
     loop = asyncio.get_event_loop()
     amqp_url = config['amqpworker']['aqmp_backend_url']
     amqp_queue = config['amqpworker']['amqp_backend_queue']
-    loop.run_until_complete(infinite(loop=loop, amqp_url=amqp_url, amqp_queue_name=amqp_queue))
-    loop.close()
+    loop.run_until_complete(forever(loop=loop, amqp_url=amqp_url, amqp_queue_name=amqp_queue))
+    loop.run_forever()
 
 if __name__ == '__main__':
     entrypoint()
